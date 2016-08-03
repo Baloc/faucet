@@ -38,13 +38,14 @@ INFLUXDB_HOST = "localhost"
 INFLUXDB_PORT = 8086
 INFLUXDB_USER = ""
 INFLUXDB_PASS = ""
+INFLUXDB_FORCESSL = True
 
 
 def ship_points_to_influxdb(points):
     client = InfluxDBClient(
         host=INFLUXDB_HOST, port=INFLUXDB_PORT,
         username=INFLUXDB_USER, password=INFLUXDB_PASS,
-        database=INFLUXDB_DB, timeout=10)
+        database=INFLUXDB_DB, timeout=10, ssl=INFLUXDB_FORCESSL)
     return client.write_points(points=points, time_precision='s')
 
 
