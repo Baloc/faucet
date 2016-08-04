@@ -18,7 +18,6 @@ import time, os, random, json
 import logging
 from logging.handlers import TimedRotatingFileHandler
 
-from dp import DP
 from util import kill_on_exception
 
 from ryu.base import app_manager
@@ -83,19 +82,18 @@ class GaugePortStateInfluxDBLogger(GaugePortStateLogger):
         super(GaugePortStateInfluxDBLogger, self).update(rcv_time, msg)
         reason = msg.reason
         port_no = msg.desc.port_no
-        if port_no in self.dp.ports:
-            port_name = self.dp.ports[port_no].name
-            port_tags = {
-                "dp_name": self.dp.name,
-                "port_name": port_name,
-            }
-            points = [{
-                "measurement": "port_state_reason",
-                "tags": port_tags,
-                "time": int(rcv_time),
-                "fields": {"value": reason}}]
-            if not self.ship_points(points):
-                self.logger.warning("error shipping port_state_reason points")
+        port_name = msg.desc.dp.dp_id + "-PORT" + port_no
+        port_tags = {
+            "dp_name": msg.desc.dp.dp_id,
+            "port_name": port_name,
+        }
+        points = [{
+            "measurement": "port_state_reason",
+            "tags": port_tags,
+            "time": int(rcv_time),
+            "fields": {"value": reason}}]
+        if not self.ship_points(points):
+            self.logger.warning("error shipping port_state_reason points")
 
 
 class GaugePoller(object):
@@ -139,7 +137,7 @@ class GaugePoller(object):
             self.reply_pending = True
             hub.sleep(self.interval)
             if self.reply_pending:
-                self.no_response()
+                self.no_response(self.dp)
 
     def send_req(self):
         """Send a stats request to a datapath."""
@@ -160,7 +158,7 @@ class GaugePoller(object):
         """
         raise NotImplementedError
 
-    def no_response(self):
+    def no_response(self, dp):
         """Called when a polling cycle passes without receiving a response."""
         raise NotImplementedError
 
@@ -193,14 +191,11 @@ class GaugePortStatsPoller(GaugePoller):
 
         for stat in msg.body:
             if stat.port_no == msg.datapath.ofproto.OFPP_CONTROLLER:
-                ref = self.dp.name + "-CONTROLLER"
+                ref = msg.datapath.id + "-CONTROLLER"
             elif stat.port_no == msg.datapath.ofproto.OFPP_LOCAL:
-                ref = self.dp.name + "-LOCAL"
-            elif stat.port_no not in self.dp.ports:
-                self.logger.info("stats for unknown port %s", stat.port_no)
-                continue
+                ref = msg.datapath.id + "-LOCAL"
             else:
-                ref = self.dp.name + "-" + self.dp.ports[stat.port_no].name
+                ref = msg.datapath.id + "-" + stat.port_no
 
             with open(self.logfile, 'a') as logfile:
                 logfile.write('{0}\t{1}\t{2}\n'.format(rcv_time_str,
@@ -225,9 +220,9 @@ class GaugePortStatsPoller(GaugePoller):
                                                        ref + "-errors-in",
                                                        stat.rx_errors))
 
-    def no_response(self):
+    def no_response(self, dp):
         self.logger.info(
-            "port stats request timed out for {0}".format(self.dp.name))
+            "port stats request timed out for {0}".format(dp))
 
 
 class GaugePortStatsInfluxDBPoller(GaugeInfluxDBPoller):
@@ -254,14 +249,11 @@ class GaugePortStatsInfluxDBPoller(GaugeInfluxDBPoller):
                 port_name = "CONTROLLER"
             elif stat.port_no == msg.datapath.ofproto.OFPP_LOCAL:
                 port_name = "LOCAL"
-            elif stat.port_no not in self.dp.ports:
-                self.logger.info("stats for unknown port %s", stat.port_no)
-                continue
             else:
-                port_name = self.dp.ports[stat.port_no].name
+                port_name = stat.port_no
 
             port_tags = {
-                "dp_name": self.dp.name,
+                "dp_name": msg.datapath.id,
                 "port_name": port_name,
             }
 
@@ -281,9 +273,9 @@ class GaugePortStatsInfluxDBPoller(GaugeInfluxDBPoller):
         if not self.ship_points(points):
             self.logger.warn("error shipping port_stats points")
 
-    def no_response(self):
+    def no_response(self, dp):
         self.logger.info(
-            "port stats request timed out for {0}".format(self.dp.name))
+            "port stats request timed out for {0}".format(dp))
 
 
 class GaugeFlowTablePoller(GaugePoller):
@@ -314,14 +306,14 @@ class GaugeFlowTablePoller(GaugePoller):
         rcv_time_str = time.strftime('%b %d %H:%M:%S')
 
         with open(self.logfile, 'a') as logfile:
-            ref = self.dp.name + "-flowtables"
+            ref = msg.datapath.id + "-flowtables"
             logfile.write("---\n")
             logfile.write("time: {0}\nref: {1}\nmsg: {2}\n".format(
                 rcv_time_str, ref, json.dumps(jsondict, indent=4)))
 
-    def no_response(self):
+    def no_response(self, dp):
         self.logger.info(
-            "flow dump request timed out for {0}".format(self.dp.name))
+            "flow dump request timed out for {0}".format(dp))
 
 
 class Gauge(app_manager.RyuApp):
@@ -369,18 +361,6 @@ class Gauge(app_manager.RyuApp):
         exc_logger.setLevel(logging.ERROR)
 
         self.dps = {}
-        with open(self.config_file, 'r') as config_file:
-            for dp_conf_file in config_file:
-                # config_file should be a list of faucet config filenames
-                # separated by linebreaks
-                dp = DP.parser(dp_conf_file.strip(), self.logname)
-                try:
-                    dp.sanity_check()
-                except AssertionError:
-                    self.logger.exception(
-                        "Error in config file {0}".format(dp_conf_file))
-                else:
-                    self.dps[dp.dp_id] = dp
 
         # Create dpset object for querying Ryu's DPSet application
         self.dpset = kwargs['dpset']
@@ -396,9 +376,6 @@ class Gauge(app_manager.RyuApp):
     @kill_on_exception(exc_logname)
     def handler_connect_or_disconnect(self, ev):
         ryudp = ev.dp
-        if ryudp.id not in self.dps:
-            self.logger.info("dp not in self.dps {0}".format(ryudp.id))
-            return
 
         dp = self.dps[ryudp.id]
 
