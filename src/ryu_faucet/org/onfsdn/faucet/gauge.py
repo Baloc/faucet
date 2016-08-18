@@ -13,12 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import time, os, random, json
+import time, os, random, json, io
 
 import logging
 from logging.handlers import TimedRotatingFileHandler
 
-from util import kill_on_exception
 
 from ryu.base import app_manager
 from ryu.controller import ofp_event
@@ -27,24 +26,16 @@ from ryu.controller.handler import MAIN_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
 from ryu.lib import hub
+from oslo_config import cfg
 
 from influxdb import InfluxDBClient
 
 
-# TODO: configurable
-INFLUXDB_DB = "faucet"
-INFLUXDB_HOST = "localhost"
-INFLUXDB_PORT = 8086
-INFLUXDB_USER = ""
-INFLUXDB_PASS = ""
-INFLUXDB_FORCESSL = True
-
-
-def ship_points_to_influxdb(points):
+def ship_points_to_influxdb(points, cfg):
     client = InfluxDBClient(
-        host=INFLUXDB_HOST, port=INFLUXDB_PORT,
-        username=INFLUXDB_USER, password=INFLUXDB_PASS,
-        database=INFLUXDB_DB, timeout=10, ssl=INFLUXDB_FORCESSL)
+        host=cfg.influxdb_host, port=cfg.influxdb_port,
+        username=cfg.influxdb_user, password=cfg.influxdb_pass,
+        database=cfg.influxdb_db, timeout=10, ssl=cfg.influxdb_forcessl)
     return client.write_points(points=points, time_precision='s')
 
 
@@ -174,8 +165,8 @@ class GaugePortStatsPoller(GaugePoller):
     outputs the response."""
     def __init__(self, dp, ryudp, logname):
         super(GaugePortStatsPoller, self).__init__(dp, ryudp, logname)
-        self.interval = self.dp.monitor_ports_interval
-        self.logfile = self.dp.monitor_ports_file
+        self.interval = 300
+        self.logfile = None
 
     def send_req(self):
         ofp = self.ryudp.ofproto
@@ -230,7 +221,7 @@ class GaugePortStatsInfluxDBPoller(GaugeInfluxDBPoller):
     outputs the response."""
     def __init__(self, dp, ryudp, logname):
         super(GaugePortStatsInfluxDBPoller, self).__init__(dp, ryudp, logname)
-        self.interval = self.dp.monitor_ports_interval
+        self.interval = 300
 
     def send_req(self):
         ofp = self.ryudp.ofproto
@@ -286,8 +277,8 @@ class GaugeFlowTablePoller(GaugePoller):
     matches all flows."""
     def __init__(self, dp, ryudp, logname):
         super(GaugeFlowTablePoller, self).__init__(dp, ryudp, logname)
-        self.interval = self.dp.monitor_flow_table_interval
-        self.logfile = self.dp.monitor_flow_table_file
+        self.interval = 300
+        self.logfile = None
 
     def send_req(self):
         ofp = self.ryudp.ofproto
@@ -331,6 +322,36 @@ class Gauge(app_manager.RyuApp):
     logname = 'gauge'
     exc_logname = logname + '.exception'
 
+    def load_config(self):
+        # Test ouverture fichier
+        try:
+            self.CONF.register_group(cfg.OptGroup(name='gauge',
+                                     title='gauge (faucet) controller options'))
+            self.CONF.register_opts([
+                                    cfg.StrOpt('influxdb_db'),
+                                    cfg.StrOpt('influxdb_host'),
+                                    cfg.IntOpt('influxdb_port'),
+                                    cfg.StrOpt('influxdb_user'),
+                                    cfg.StrOpt('influxdb_pass'),
+                                    cfg.BoolOpt('influxdb_forcessl'),
+                                    cfg.BoolOpt('enable')
+                                    ], 'gauge')
+
+            if self.CONF.gauge.enable is False:
+                self.logger.warn("Application Contrôleur gauge désactivé")
+                self.stop()
+            self.filepath = self.CONF.stateful.filepath
+            file_test = io.open(self.filepath, mode='r')
+            file_test.close()
+        except AttributeError:
+            self.logger.error("Erreur : Chemin de fichier invalide")
+            self.stop()
+            return False
+        except cfg.NoSuchOptError:
+            self.logger.error("Erreur : Fichier de configuration invalide")
+            self.stop()
+            return False
+        return True
     def __init__(self, *args, **kwargs):
         super(Gauge, self).__init__(*args, **kwargs)
         self.config_file = os.getenv(
@@ -373,7 +394,6 @@ class Gauge(app_manager.RyuApp):
         self.handlers = {}
 
     @set_ev_cls(dpset.EventDP, dpset.DPSET_EV_DISPATCHER)
-    @kill_on_exception(exc_logname)
     def handler_connect_or_disconnect(self, ev):
         ryudp = ev.dp
 
@@ -391,7 +411,6 @@ class Gauge(app_manager.RyuApp):
             dp.running = False
 
     @set_ev_cls(dpset.EventDPReconnected, dpset.DPSET_EV_DISPATCHER)
-    @kill_on_exception(exc_logname)
     def handler_reconnect(self, ev):
         self.logger.info("datapath reconnected %x", self.dps[ev.dp.id].dp_id)
         self.handler_datapath(ev)
@@ -433,21 +452,18 @@ class Gauge(app_manager.RyuApp):
             flow_table_poller.start()
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER) # pylint: disable=no-member
-    @kill_on_exception(exc_logname)
     def port_status_handler(self, ev):
         rcv_time = time.time()
         dp = self.dps[ev.msg.datapath.id]
         self.handlers[dp.dp_id]['port_state'].update(rcv_time, ev.msg)
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER) # pylint: disable=no-member
-    @kill_on_exception(exc_logname)
     def port_stats_reply_handler(self, ev):
         rcv_time = time.time()
         dp = self.dps[ev.msg.datapath.id]
         self.pollers[dp.dp_id]['port_stats'].update(rcv_time, ev.msg)
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER) # pylint: disable=no-member
-    @kill_on_exception(exc_logname)
     def flow_stats_reply_handler(self, ev):
         rcv_time = time.time()
         dp = self.dps[ev.msg.datapath.id]
