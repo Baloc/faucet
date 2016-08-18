@@ -1,3 +1,4 @@
+# -*- coding: utf8 -*-
 # Copyright (C) 2015 Research and Education Advanced Network New Zealand Ltd.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -428,26 +429,21 @@ class Gauge(app_manager.RyuApp):
             self.handlers[dp.dp_id] = {}
 
         if dp.influxdb_stats:
-            port_state_handler = GaugePortStateInfluxDBLogger(
-                dp, ryudp, self.logname)
+            port_state_handler = GaugePortStateInfluxDBLogger(dp, ryudp, self.logname)
         else:
-            port_state_handler = GaugePortStateLogger(
-                dp, ryudp, self.logname)
+            port_state_handler = GaugePortStateLogger(dp, ryudp, self.logname)
         self.handlers[dp.dp_id]['port_state'] = port_state_handler
 
         if dp.monitor_ports:
             if dp.influxdb_stats:
-                port_stats_poller = GaugePortStatsInfluxDBPoller(
-                    dp, ryudp, self.logname)
+                port_stats_poller = GaugePortStatsInfluxDBPoller(dp, ryudp, self.logname)
             else:
-                port_stats_poller = GaugePortStatsPoller(
-                    dp, ryudp, self.logname)
+                port_stats_poller = GaugePortStatsPoller(dp, ryudp, self.logname)
             self.pollers[dp.dp_id]['port_stats'] = port_stats_poller
             port_stats_poller.start()
 
         if dp.monitor_flow_table:
-            flow_table_poller = GaugeFlowTablePoller(
-                dp, ryudp, self.logname)
+            flow_table_poller = GaugeFlowTablePoller(dp, ryudp, self.logname)
             self.pollers[dp.dp_id]['flow_table'] = flow_table_poller
             flow_table_poller.start()
 
