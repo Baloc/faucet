@@ -64,10 +64,11 @@ class GaugePortStateLogger(object):
             self.logger.info("Illegal port state %s %s", port_no, reason)
 
 
-class GaugePortStateInfluxDBLogger(GaugePortStateLogger):
-
+class GaugePortStateInfluxDBLogger(GaugePortStateLogger ):
+    def __init__(self, cfg_influx):
+        self.cfg_influx = cfg_influx
     def ship_points(self, points):
-        return ship_points_to_influxdb(points, cfg_influx)
+        return ship_points_to_influxdb(points, self.cfg_influx)
 
     def update(self, rcv_time, msg):
         super(GaugePortStateInfluxDBLogger, self).update(rcv_time, msg)
@@ -154,9 +155,12 @@ class GaugePoller(object):
 
 
 class GaugeInfluxDBPoller(GaugePoller):
+    def __init__(self, ryudb, logname,cfg_influxdb):
+        super(GaugeInfluxDBPoller, self).__init__(ryudb, logname)
+        self.cfg_influxdb = cfg_influxdb
 
     def ship_points(self, points):
-        return ship_points_to_influxdb(points, cfg_influx)
+        return ship_points_to_influxdb(points, self.cfg_influxdb)
 
 
 class GaugePortStatsPoller(GaugePoller):
@@ -218,8 +222,8 @@ class GaugePortStatsPoller(GaugePoller):
 class GaugePortStatsInfluxDBPoller(GaugeInfluxDBPoller):
     """Periodically sends a port stats request to the datapath and parses and
     outputs the response."""
-    def __init__(self, ryudp, logname):
-        super(GaugePortStatsInfluxDBPoller, self).__init__(ryudp, logname)
+    def __init__(self, ryudp, logname, cfg_influx):
+        super(GaugePortStatsInfluxDBPoller, self).__init__(ryudp, logname, cfg_influx)
         self.interval = 300
 
     def send_req(self):
@@ -358,7 +362,7 @@ class Gauge(app_manager.RyuApp):
         self.exc_logfile = os.getenv(
             'GAUGE_EXCEPTION_LOG', '/var/log/ryu/faucet/gauge_exception.log')
         self.logfile = os.getenv('GAUGE_LOG', '/var/log/ryu/faucet/gauge.log')
-
+        self.load_config()
         # Setup logging
         self.logger = logging.getLogger(__name__)
         logger_handler = TimedRotatingFileHandler(
@@ -421,10 +425,10 @@ class Gauge(app_manager.RyuApp):
             self.pollers[ryudp.id] = {}
             self.handlers[ryudp.id] = {}
 
-        port_state_handler = GaugePortStateInfluxDBLogger(ryudp, self.logname)
+        port_state_handler = GaugePortStateInfluxDBLogger(self.CONF.gauge)
         self.handlers[ryudp.id]['port_state'] = port_state_handler
 
-        port_stats_poller = GaugePortStatsInfluxDBPoller(ryudp, self.logname)
+        port_stats_poller = GaugePortStatsInfluxDBPoller(self.CONF.gauge, ryudp, self.logname)
         self.pollers[ryudp.id]['port_stats'] = port_stats_poller
         port_stats_poller.start()
 
