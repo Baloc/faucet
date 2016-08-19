@@ -343,9 +343,6 @@ class Gauge(app_manager.RyuApp):
             if self.CONF.gauge.enable is False:
                 self.logger.warn("Application Contrôleur gauge désactivé")
                 self.stop()
-            self.filepath = self.CONF.stateful.filepath
-            file_test = io.open(self.filepath, mode='r')
-            file_test.close()
         except AttributeError:
             self.logger.error("Erreur : Chemin de fichier invalide")
             self.stop()
@@ -428,7 +425,7 @@ class Gauge(app_manager.RyuApp):
         port_state_handler = GaugePortStateInfluxDBLogger(self.CONF.gauge)
         self.handlers[ryudp.id]['port_state'] = port_state_handler
 
-        port_stats_poller = GaugePortStatsInfluxDBPoller(self.CONF.gauge, ryudp, self.logname)
+        port_stats_poller = GaugePortStatsInfluxDBPoller(ryudp, self.logname, self.CONF.gauge)
         self.pollers[ryudp.id]['port_stats'] = port_stats_poller
         port_stats_poller.start()
 
