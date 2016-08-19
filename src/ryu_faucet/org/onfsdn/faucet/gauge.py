@@ -42,8 +42,7 @@ def ship_points_to_influxdb(points, cfg):
 
 class GaugePortStateLogger(object):
 
-    def __init__(self, dp, ryudp, logname):
-        self.dp = dp
+    def __init__(self,ryudp, logname):
         self.ryudp = ryudp
         self.logger = logging.getLogger(logname)
 
@@ -68,15 +67,15 @@ class GaugePortStateLogger(object):
 class GaugePortStateInfluxDBLogger(GaugePortStateLogger):
 
     def ship_points(self, points):
-        return ship_points_to_influxdb(points)
+        return ship_points_to_influxdb(points, cfg_influx)
 
     def update(self, rcv_time, msg):
         super(GaugePortStateInfluxDBLogger, self).update(rcv_time, msg)
         reason = msg.reason
         port_no = msg.desc.port_no
-        port_name = msg.desc.dp.dp_id + "-PORT" + port_no
+        port_name = msg.desc.ryudp.id + "-PORT" + port_no
         port_tags = {
-            "dp_name": msg.desc.dp.dp_id,
+            "dp_name": msg.desc.ryudp.id,
             "port_name": port_name,
         }
         points = [{
@@ -97,8 +96,7 @@ class GaugePoller(object):
     The methods send_req, update and no_response should be implemented by
     subclasses.
     """
-    def __init__(self, dp, ryudp, logname):
-        self.dp = dp
+    def __init__(self, ryudp, logname):
         self.ryudp = ryudp
         self.thread = None
         self.reply_pending = False
@@ -129,7 +127,7 @@ class GaugePoller(object):
             self.reply_pending = True
             hub.sleep(self.interval)
             if self.reply_pending:
-                self.no_response(self.dp)
+                self.no_response(self.ryudp.id)
 
     def send_req(self):
         """Send a stats request to a datapath."""
@@ -158,14 +156,14 @@ class GaugePoller(object):
 class GaugeInfluxDBPoller(GaugePoller):
 
     def ship_points(self, points):
-        return ship_points_to_influxdb(points)
+        return ship_points_to_influxdb(points, cfg_influx)
 
 
 class GaugePortStatsPoller(GaugePoller):
     """Periodically sends a port stats request to the datapath and parses and
     outputs the response."""
-    def __init__(self, dp, ryudp, logname):
-        super(GaugePortStatsPoller, self).__init__(dp, ryudp, logname)
+    def __init__(self, ryudp, logname):
+        super(GaugePortStatsPoller, self).__init__(ryudp, logname)
         self.interval = 300
         self.logfile = None
 
@@ -220,8 +218,8 @@ class GaugePortStatsPoller(GaugePoller):
 class GaugePortStatsInfluxDBPoller(GaugeInfluxDBPoller):
     """Periodically sends a port stats request to the datapath and parses and
     outputs the response."""
-    def __init__(self, dp, ryudp, logname):
-        super(GaugePortStatsInfluxDBPoller, self).__init__(dp, ryudp, logname)
+    def __init__(self, ryudp, logname):
+        super(GaugePortStatsInfluxDBPoller, self).__init__(ryudp, logname)
         self.interval = 300
 
     def send_req(self):
@@ -276,8 +274,8 @@ class GaugeFlowTablePoller(GaugePoller):
     Includes a timestamp and a reference ($DATAPATHNAME-flowtables). The
     flow table is dumped as an OFFlowStatsReply message (in yaml format) that
     matches all flows."""
-    def __init__(self, dp, ryudp, logname):
-        super(GaugeFlowTablePoller, self).__init__(dp, ryudp, logname)
+    def __init__(self, ryudp, logname):
+        super(GaugeFlowTablePoller, self).__init__(ryudp, logname)
         self.interval = 300
         self.logfile = None
 
@@ -382,7 +380,6 @@ class Gauge(app_manager.RyuApp):
         exc_logger.propagate = 1
         exc_logger.setLevel(logging.ERROR)
 
-        self.dps = {}
 
         # Create dpset object for querying Ryu's DPSet application
         self.dpset = kwargs['dpset']
@@ -398,69 +395,54 @@ class Gauge(app_manager.RyuApp):
     def handler_connect_or_disconnect(self, ev):
         ryudp = ev.dp
 
-        dp = self.dps[ryudp.id]
 
         if ev.enter: # DP is connecting
-            self.logger.info("datapath up %x", dp.dp_id)
+            self.logger.info("datapath up %x", ryudp.id)
             self.handler_datapath(ev)
         else: # DP is disconnecting
-            if dp.dp_id in self.pollers:
-                for poller in self.pollers[dp.dp_id].values():
+            if ryudp.id in self.pollers:
+                for poller in self.pollers[ryudp.id].values():
                     poller.stop()
-                del self.pollers[dp.dp_id]
-            self.logger.info("datapath down %x", dp.dp_id)
-            dp.running = False
+                del self.pollers[ryudp.id]
+            self.logger.info("datapath down %x", ryudp.id)
 
     @set_ev_cls(dpset.EventDPReconnected, dpset.DPSET_EV_DISPATCHER)
     def handler_reconnect(self, ev):
-        self.logger.info("datapath reconnected %x", self.dps[ev.dp.id].dp_id)
+        self.logger.info("datapath reconnected %x", ev.msg.datapath.id)
         self.handler_datapath(ev)
 
     def handler_datapath(self, ev):
         ryudp = ev.dp
-        dp = self.dps[ryudp.id]
         # Set up a thread to poll for port stats
         # TODO: set up threads to poll for other stats as well
         # TODO: allow the different things to be polled for to be
         # configurable
-        dp.running = True
-        if dp.dp_id not in self.pollers:
-            self.pollers[dp.dp_id] = {}
-            self.handlers[dp.dp_id] = {}
+        if ryudp.id not in self.pollers:
+            self.pollers[ryudp.id] = {}
+            self.handlers[ryudp.id] = {}
 
-        if dp.influxdb_stats:
-            port_state_handler = GaugePortStateInfluxDBLogger(dp, ryudp, self.logname)
-        else:
-            port_state_handler = GaugePortStateLogger(dp, ryudp, self.logname)
-        self.handlers[dp.dp_id]['port_state'] = port_state_handler
+        port_state_handler = GaugePortStateInfluxDBLogger(ryudp, self.logname)
+        self.handlers[ryudp.id]['port_state'] = port_state_handler
 
-        if dp.monitor_ports:
-            if dp.influxdb_stats:
-                port_stats_poller = GaugePortStatsInfluxDBPoller(dp, ryudp, self.logname)
-            else:
-                port_stats_poller = GaugePortStatsPoller(dp, ryudp, self.logname)
-            self.pollers[dp.dp_id]['port_stats'] = port_stats_poller
-            port_stats_poller.start()
+        port_stats_poller = GaugePortStatsInfluxDBPoller(ryudp, self.logname)
+        self.pollers[ryudp.id]['port_stats'] = port_stats_poller
+        port_stats_poller.start()
 
-        if dp.monitor_flow_table:
-            flow_table_poller = GaugeFlowTablePoller(dp, ryudp, self.logname)
-            self.pollers[dp.dp_id]['flow_table'] = flow_table_poller
-            flow_table_poller.start()
+        flow_table_poller = GaugeFlowTablePoller(ryudp, self.logname)
+        self.pollers[ryudp.id]['flow_table'] = flow_table_poller
+        flow_table_poller.start()
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER) # pylint: disable=no-member
     def port_status_handler(self, ev):
         rcv_time = time.time()
-        dp = self.dps[ev.msg.datapath.id]
-        self.handlers[dp.dp_id]['port_state'].update(rcv_time, ev.msg)
+        self.handlers[ev.msg.datapath.id]['port_state'].update(rcv_time, ev.msg)
 
     @set_ev_cls(ofp_event.EventOFPPortStatsReply, MAIN_DISPATCHER) # pylint: disable=no-member
     def port_stats_reply_handler(self, ev):
         rcv_time = time.time()
-        dp = self.dps[ev.msg.datapath.id]
-        self.pollers[dp.dp_id]['port_stats'].update(rcv_time, ev.msg)
+        self.pollers[ev.msg.datapath.id]['port_stats'].update(rcv_time, ev.msg)
 
     @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER) # pylint: disable=no-member
     def flow_stats_reply_handler(self, ev):
         rcv_time = time.time()
-        dp = self.dps[ev.msg.datapath.id]
-        self.pollers[dp.dp_id]['flow_table'].update(rcv_time, ev.msg)
+        self.pollers[ev.msg.datapath.id]['flow_table'].update(rcv_time, ev.msg)
