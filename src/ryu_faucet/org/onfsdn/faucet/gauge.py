@@ -310,6 +310,104 @@ class GaugeFlowTablePoller(GaugePoller):
             "flow dump request timed out for {0}".format(dp))
 
 
+class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
+
+    def __init__(self, ryudb, logname, cfg_influxdb):
+        super(GaugeFlowTableInfuxDBPoller, self).__init__(ryudb, logname, cfg_influxdb)
+        self.interval = 300
+
+    def decode_flow(self, stat):
+        """
+        Retrieve flow information form cookie.
+        :param data: flow stat data output
+        :param stat: flow stat send by the controller
+        :return:
+        """
+        cookie = stat.cookie
+        source = (cookie >> 32) - 1024
+        if source < 0:
+            return "IGNORE"
+        destination = (cookie & 0x00000000FFFFFFFF) - 1024
+        if destination < 0:
+            return "IGNORE"
+        type = self.guess_flow_type(stat)
+        return source, destination, type
+
+
+    def guess_flow_type(self, stat):
+        """
+        Guess flow type based on dl_type match component in the flow statistic.
+        :param stat: flow statistic
+        :return: flow_type
+        """
+        match = stat.match
+        if match.dl_type == 2054:
+            return "ARP"
+        elif match.dl_type == 2048:
+            return "IPv4"
+        elif match.dl_type == 34525:
+            if "icmpv6_type" not in match:
+                return "IPv6"
+            else:
+                return "ICMPv6"
+
+    def send_req(self):
+        ofp_parser = self.ryudp.ofproto_parser
+        req = ofp_parser.OFPFlowStatsRequest(
+            self.ryudp, 0, 1)
+        self.ryudp.send_msg(req)
+
+    def merge_two_dicts(self, x, y):
+        '''Given two dicts, merge them into a new dict as a shallow copy.'''
+        z = x.copy()
+        z.update(y)
+        return z
+
+    def update(self, rcv_time, msg):
+        """Handle the responses to requests.
+
+        Called when a reply to a stats request sent by this object is received
+        by the controller.
+
+        It should acknowledge the receipt by setting self.reply_pending to
+        false.
+
+        Arguments:
+        rcv_time -- the time the response was received
+        msg -- the stats reply message
+        """
+        self.reply_pending = False
+        points = []
+
+        for stat in msg.body:
+            # ignore tables other than 1
+            if stat.table_id is not 1:
+                continue
+            decode = self.decode_flow(stat)
+
+            flow_tags = {
+                "dp_name": msg.datapath.id,
+                "source": decode[0],
+                "destination": decode[1],
+                "type": decode[2]
+            }
+
+            for stat_name, stat_value in (
+                    ("byte_count", stat.byte_count),
+                    ("packet_count", stat.packet_count)):
+                points.append({
+                    "measurement": stat_name,
+                    "tags": flow_tags,
+                    "time": int(rcv_time),
+                    "fields": {"value": stat_value}})
+        if not self.ship_points(points):
+            self.logger.warn("error shipping flow_table points")
+
+    def no_response(self, dp):
+        self.logger.info(
+            "flow table stats request timed out for {0}".format(dp))
+
+
 class Gauge(app_manager.RyuApp):
     """Ryu app for polling Faucet controlled datapaths for stats/state.
 
@@ -429,7 +527,7 @@ class Gauge(app_manager.RyuApp):
         self.pollers[ryudp.id]['port_stats'] = port_stats_poller
         port_stats_poller.start()
 
-        flow_table_poller = GaugeFlowTablePoller(ryudp, self.logname)
+        flow_table_poller = GaugeFlowTableInfuxDBPoller(ryudp, self.logname, self.CONF.gauge)
         self.pollers[ryudp.id]['flow_table'] = flow_table_poller
         flow_table_poller.start()
 
