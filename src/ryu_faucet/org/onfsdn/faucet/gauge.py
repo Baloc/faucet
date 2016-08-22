@@ -333,19 +333,18 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
         type = self.guess_flow_type(stat)
         return source, destination, type
 
-
     def guess_flow_type(self, stat):
         """
-        Guess flow type based on dl_type match component in the flow statistic.
+        Guess flow type based on eth_type match component in the flow statistic.
         :param stat: flow statistic
         :return: flow_type
         """
-        match = stat.match
-        if match.dl_type == 2054:
+        match = stat.match.oxm_fields
+        if match.eth_type == 2054:
             return "ARP"
-        elif match.dl_type == 2048:
+        elif match.eth_type == 2048:
             return "IPv4"
-        elif match.dl_type == 34525:
+        elif match.eth_type == 34525:
             if "icmpv6_type" not in match:
                 return "IPv6"
             else:
