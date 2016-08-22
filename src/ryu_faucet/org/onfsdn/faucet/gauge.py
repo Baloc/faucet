@@ -340,11 +340,11 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
         :return: flow_type
         """
         match = stat.match.oxm_fields
-        if match.eth_type == 2054:
+        if match.get("eth_type") == 2054:
             return "ARP"
-        elif match.eth_type == 2048:
+        elif match.get("eth_type") == 2048:
             return "IPv4"
-        elif match.eth_type == 34525:
+        elif match.get("eth_type") == 34525:
             if "icmpv6_type" not in match:
                 return "IPv6"
             else:
@@ -355,12 +355,6 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
         req = ofp_parser.OFPFlowStatsRequest(
             self.ryudp, 0, 1)
         self.ryudp.send_msg(req)
-
-    def merge_two_dicts(self, x, y):
-        '''Given two dicts, merge them into a new dict as a shallow copy.'''
-        z = x.copy()
-        z.update(y)
-        return z
 
     def update(self, rcv_time, msg):
         """Handle the responses to requests.
