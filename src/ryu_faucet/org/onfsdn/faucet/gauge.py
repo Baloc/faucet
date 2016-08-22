@@ -371,7 +371,7 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
         """
         self.reply_pending = False
         points = []
-
+        int_overflow = 0
         for stat in msg.body:
             # ignore tables other than 1
             if stat.table_id is not 1:
@@ -388,6 +388,10 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
             for stat_name, stat_value in (
                     ("byte_count", stat.byte_count),
                     ("packet_count", stat.packet_count)):
+                if stat_value > 4294967296:
+                    # ignore this loop for reason described in warning below
+                    int_overflow = 1
+                    continue
                 points.append({
                     "measurement": stat_name,
                     "tags": flow_tags,
@@ -395,6 +399,9 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
                     "fields": {"value": stat_value}})
         if not self.ship_points(points):
             self.logger.warn("error shipping flow_table points")
+        if int_overflow is 1:
+            self.logger.warn("Values ignored in port table stats to avoid influxdb client bug "
+                             ": https://github.com/influxdata/influxdb/pull/7166")
 
     def no_response(self, dp):
         self.logger.info(
