@@ -339,12 +339,12 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
         :param stat: flow statistic
         :return: flow_type
         """
-        match = stat.match.oxm_fields
-        if match.get("eth_type") == 2054:
+        match = stat.match
+        if match["eth_type"] == 2054:
             return "ARP"
-        elif match.get("eth_type") == 2048:
+        elif match["eth_type"] == 2048:
             return "IPv4"
-        elif match.get("eth_type") == 34525:
+        elif match["eth_type"] == 34525:
             if "icmpv6_type" not in match:
                 return "IPv6"
             else:
