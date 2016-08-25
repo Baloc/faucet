@@ -388,9 +388,14 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
             for stat_name, stat_value in (
                     ("byte_count", stat.byte_count),
                     ("packet_count", stat.packet_count)):
-                if stat_value > 4294967296:
+                if stat_value > 0x7FFFFFFFFFFFFFFF:
                     # ignore this loop for reason described in warning below
                     int_overflow = 1
+                    points.append({
+                        "measurement": stat_name,
+                        "tags": flow_tags,
+                        "time": int(rcv_time),
+                        "fields": {"value_string": str(stat_value)}})
                     continue
                 points.append({
                     "measurement": stat_name,
@@ -400,7 +405,7 @@ class GaugeFlowTableInfuxDBPoller(GaugeInfluxDBPoller):
         if not self.ship_points(points):
             self.logger.warn("error shipping flow_table points")
         if int_overflow is 1:
-            self.logger.warn("Values ignored in port table stats to avoid influxdb client bug "
+            self.logger.warn("Values mmoved into string in port table stats to avoid influxdb client bug "
                              ": https://github.com/influxdata/influxdb/pull/7166")
 
     def no_response(self, dp):
