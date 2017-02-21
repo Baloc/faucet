@@ -16,13 +16,13 @@ with open(os.path.join(os.path.dirname(__file__), 'README.rst')) as readme:
         version='1.0',
         packages=['ryu_faucet_apps'],
         package_dir={'ryu_faucet_apps': 'src/apps'},
-        data_files=[('/etc/ryu/faucet', ['src/cfg/etc/ryu/faucet/gauge.conf'
+        data_files=[('/etc/ryu/faucet', ['src/cfg/etc/ryu/faucet/gauge.yaml'
                                          ]),
-                    ('/etc/ryu/faucet/upstart', ['src/cfg/etc/ryu/faucet/upstart/gauge.conf'
+                    ('/etc/ryu/faucet/upstart', ['src/cfg/etc/ryu/faucet/upstart/gauge.yaml'
                                          ])
                     ],
         include_package_data=True,
-        install_requires=['ryu', 'pyyaml', 'influxdb', 'ipaddr'],
+        install_requires=['ryu>=4.9', 'pyyaml', 'influxdb', 'ipaddr'],
         license='Apache License 2.0',
         description='Ryu faucet applications to perform Layer 2 switching with VLANs.',
         long_description=README,

@@ -13,117 +13,115 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
-import logging
-import yaml
-
+from conf import Conf
 from vlan import VLAN
 from port import Port
+from valve_acl import ACL
+
+import networkx
 
 
-class DP(object):
+class DP(Conf):
     """Object to hold the configuration for a faucet controlled datapath."""
 
-    dp_id = None
     acls = None
     vlans = None
     ports = None
     running = False
     influxdb_stats = False
+    name = None
+    dp_id = None
+    configured = False
+    table_offset = None
+    port_acl_table = None
+    vlan_table = None
+    vlan_acl_table = None
+    eth_src_table = None
+    ipv4_fib_table = None
+    ipv6_fib_table = None
+    eth_dst_table = None
+    flood_table = None
+    priority_offset = None
+    low_priority = None
+    high_priority = None
+    stack = None
+    stack_ports = None
+    ignore_learn_ins = None
+    drop_broadcast_source_address = None
+    drop_spoofed_faucet_mac = None
+    drop_bpdu = None
+    drop_lldp = None
+    group_table = False
 
-    def __init__(self, dp_id, logname):
-        self.dp_id = dp_id
+    # Values that are set to None will be set using set_defaults
+    # they are included here for testing and informational purposes
+    defaults = {
+        'dp_id': None,
+        # Name for this dp, used for stats reporting and configuration
+        'name': None,
+        'table_offset': 0,
+        'port_acl_table': None,
+        # The table for internally associating vlans
+        'vlan_table': None,
+        'vlan_acl_table': None,
+        'eth_src_table': None,
+        'ipv4_fib_table': None,
+        'ipv6_fib_table': None,
+        'eth_dst_table': None,
+        'flood_table': None,
+        # How much to offset default priority by
+        'priority_offset': 0,
+        # Some priority values
+        'lowest_priority': None,
+        'low_priority': None,
+        'high_priority': None,
+        'highest_priority': None,
+        # Identification cookie value to allow for multiple controllers to
+        # control the same datapath
+        'cookie': 1524372928,
+        # inactive MAC timeout
+        'timeout': 300,
+        # description, strictly informational
+        'description': None,
+        # The hardware maker (for chosing an openflow driver)
+        'hardware': 'Open vSwitch',
+        # ARP and neighbor timeout (seconds)
+        'arp_neighbor_timeout': 500,
+        # OF channel log
+        'ofchannel_log': None,
+        # stacking config, when cross connecting multiple DPs
+        'stack': None,
+        # Ignore every approx nth packet for learning.
+        # 2 will ignore 1 out of 2 packets; 3 will ignore 1 out of 3 packets.
+        # This limits control plane activity when learning new hosts rapidly.
+        # Flooding will still be done by the dataplane even with a packet
+        # is ignored for learning purposes.
+        'ignore_learn_ins': 3,
+        # By default drop packets with a broadcast source address
+        'drop_broadcast_source_address': True,
+        # By default drop packets on datapath spoofing the FAUCET_MAC
+        'drop_spoofed_faucet_mac': True,
+        # By default drop STP BPDU frames
+        'drop_bpdu': True,
+        # By default, drop LLDP. Set to False, to enable NFV offload of LLDP.
+        'drop_lldp': True,
+        #Use GROUP tables for IP routing and vlan flooding
+        'group_table': False,
+        }
+
+    def __init__(self, _id, conf):
+        self._id = _id
+        self.update(conf)
+        self.set_defaults()
         self.acls = {}
         self.vlans = {}
         self.ports = {}
-        self.mirror_from_port = {}
-        self.acl_in = {}
-        self.logger = logging.getLogger(logname)
-        self.set_defaults()
-
-    @classmethod
-    def _parser_v1(cls, conf, config_file, logname):
-        logger = logging.getLogger(logname)
-
-        if 'dp_id' not in conf:
-            logger.error("dp_id not configured in file: {0}".format(config_file))
-            return None
-
-        dp = DP(conf['dp_id'], logname)
-
-        interfaces = conf.pop('interfaces', {})
-        vlans = conf.pop('vlans', {})
-        acls = conf.pop('acls', {})
-        dp.__dict__.update(conf)
-        dp.set_defaults()
-
-        for vid, vlan_conf in vlans.iteritems():
-            dp.add_vlan(vid, vlan_conf)
-        for port_num, port_conf in interfaces.iteritems():
-            dp.add_port(port_num, port_conf)
-        for acl_num, acl_conf in acls.iteritems():
-            dp.add_acl(acl_num, acl_conf)
-
-        return dp
-
-    @classmethod
-    def _parser_v2(cls, conf, config_file, logname):
-        logger = logging.getLogger(logname)
-
-        if 'dps' not in conf:
-            logger.error("dps not configured in file: {0}".format(config_file))
-            return None
-
-        vlans = conf.pop('vlans', {})
-        acls = conf.pop('acls', {})
-
-        dps = []
-        for dp_id, cf in conf['dps'].iteritems():
-            dp = DP(dp_id, logname)
-            interfaces = cf.pop('interfaces', {})
-            dp.__dict__.update(cf)
-            dp.set_defaults()
-
-            for vid, vlan_conf in vlans.iteritems():
-                dp.add_vlan(vid, vlan_conf)
-            for port_num, port_conf in interfaces.iteritems():
-                dp.add_port(port_num, port_conf)
-            for acl_num, acl_conf in acls.iteritems():
-                dp.add_acl(acl_num, acl_conf)
-
-            dps.append(dp)
-
-        if dps:
-            return dps[0]
-        else:
-            logger.error("dps configured with no elements in file: {0}".format(config_file))
-            return None
-
-    @classmethod
-    def parser(cls, config_file, logname=__name__):
-        logger = logging.getLogger(logname)
-        try:
-            with open(config_file, 'r') as stream:
-                conf = yaml.load(stream)
-        except yaml.YAMLError as ex:
-            mark = ex.problem_mark
-            logger.error("Error in file: {0} at ({1}, {2})".format(
-                config_file,
-                mark.line + 1,
-                mark.column + 1))
-            return None
-
-        version = conf.pop('version', 1)
-
-        if version == 1:
-            return DP._parser_v1(conf, config_file, logname)
-        elif version == 2:
-            return DP._parser_v2(conf, config_file, logname)
-        else:
-            logger.error("unsupported config version number: {0}".format(version))
-            return None
+        self.stack_ports = []
+        self.port_acl_in = {}
+        self.vlan_acl_in = {}
 
     def sanity_check(self):
+        # TODO: this shouldnt use asserts
         assert 'dp_id' in self.__dict__
         assert isinstance(self.dp_id, (int, long))
         for vid, vlan in self.vlans.iteritems():
@@ -133,109 +131,198 @@ class DP(object):
         for portnum, port in self.ports.iteritems():
             assert isinstance(portnum, int)
             assert isinstance(port, Port)
-        assert isinstance(self.monitor_ports, bool)
-        assert isinstance(self.monitor_ports_file, basestring)
-        assert isinstance(self.monitor_ports_interval, int)
-        assert isinstance(self.monitor_flow_table, bool)
-        assert isinstance(self.monitor_flow_table_file, basestring)
-        assert isinstance(self.monitor_flow_table_interval, int)
-        assert isinstance(self.influxdb_stats, bool)
 
     def set_defaults(self):
-        # Offset for tables used by faucet
-        self.__dict__.setdefault('table_offset', 0)
-        # The table for internally associating vlans
-        self.__dict__.setdefault('vlan_table', self.table_offset)
-        # Table for applying ACLs.
-        self.__dict__.setdefault('acl_table', self.table_offset + 1)
-        # The table for checking eth src addresses are known
-        self.__dict__.setdefault('eth_src_table', self.acl_table + 1)
-        # The table that is the IPv4 FIB for routing
-        self.__dict__.setdefault('ipv4_fib_table', self.eth_src_table + 1)
-        # The table that is the IPv6 FIB for routing
-        self.__dict__.setdefault('ipv6_fib_table', self.ipv4_fib_table + 1)
-        # The table for matching eth dst and applying unicast actions
-        self.__dict__.setdefault('eth_dst_table', self.ipv6_fib_table + 1)
-        # The table for applying broadcast actions
-        self.__dict__.setdefault('flood_table', self.eth_dst_table + 1)
-        # How much to offset default priority by
-        self.__dict__.setdefault('priority_offset', 0)
-        # Some priority values
-        self.__dict__.setdefault('lowest_priority', self.priority_offset)
-        self.__dict__.setdefault('low_priority', self.priority_offset + 9000)
-        self.__dict__.setdefault('high_priority', self.low_priority + 1)
-        self.__dict__.setdefault('highest_priority', self.high_priority + 98)
-        # Identification cookie value to allow for multiple controllers to
-        # control the same datapath
-        self.__dict__.setdefault('cookie', 1524372928)
-        # inactive MAC timeout
-        self.__dict__.setdefault('timeout', 300)
-        # enable port stats monitoring?
-        self.__dict__.setdefault('monitor_ports', False)
-        # File for port stats logging
-        self.__dict__.setdefault('monitor_ports_file', 'logfile.log')
-        # Stats reporting interval (in seconds)
-        self.__dict__.setdefault('monitor_ports_interval', 30)
-        # Enable flow table monitoring?
-        self.__dict__.setdefault('monitor_flow_table', False)
-        # File for flow table logging
-        self.__dict__.setdefault('monitor_flow_table_file', 'logfile.log')
-        # Stats reporting interval
-        self.__dict__.setdefault('monitor_flow_table_interval', 30)
-        # Name for this dp, used for stats reporting
-        self.__dict__.setdefault('name', str(self.dp_id))
-        # description, strictly informational
-        self.__dict__.setdefault('description', self.name)
-        # The hardware maker (for chosing an openflow driver)
-        self.__dict__.setdefault('hardware', 'Open_vSwitch')
-        # Whether to use influxdb for stats
-        self.__dict__.setdefault('influxdb_stats', False)
-        # ARP and neighbor timeout (seconds)
-        self.__dict__.setdefault('arp_neighbor_timeout', 500)
-        # OF channel log
-        self.__dict__.setdefault('ofchannel_log', None)
+        for key, value in self.defaults.iteritems():
+            self._set_default(key, value)
+        # fix special cases
+        self._set_default('dp_id', self._id)
+        self._set_default('name', str(self._id))
+        self._set_default('port_acl_table', self.table_offset)
+        self._set_default('vlan_table', self.port_acl_table + 1)
+        self._set_default('vlan_acl_table', self.vlan_table + 1)
+        self._set_default('eth_src_table', self.vlan_acl_table + 1)
+        self._set_default('ipv4_fib_table', self.eth_src_table + 1)
+        self._set_default('ipv6_fib_table', self.ipv4_fib_table + 1)
+        self._set_default('eth_dst_table', self.ipv6_fib_table + 1)
+        self._set_default('flood_table', self.eth_dst_table + 1)
+        self._set_default('lowest_priority', self.priority_offset)
+        self._set_default('low_priority', self.priority_offset + 9000)
+        self._set_default('high_priority', self.low_priority + 1)
+        self._set_default('highest_priority', self.high_priority + 98)
+        self._set_default('description', self.name)
 
-    def add_acl(self, acl_num, acl_conf=None):
+    def add_acl(self, acl_ident, acl_conf=None):
         if acl_conf is not None:
-            self.acls[acl_num] = [x['rule'] for x in acl_conf]
+            self.acls[acl_ident] = ACL(acl_ident, acl_conf)
 
-    def add_port(self, port_num, port_conf=None):
-        # add port specific vlans or fall back to defaults
-        port_conf = copy.copy(port_conf) if port_conf else {}
+    def add_port(self, port):
+        port_num = port.number
+        self.ports[port_num] = port
+        if port.mirror is not None:
+            # other configuration entries ignored
+            return
+        if port.acl_in is not None:
+            self.port_acl_in[port_num] = port.acl_in
+        if port.stack is not None:
+            self.stack_ports.append(port)
 
-        port = self.ports.setdefault(port_num, Port(port_num, port_conf))
+    def add_vlan(self, vlan):
+        self.vlans[vlan.vid] = vlan
+        if vlan.acl_in is not None:
+            self.vlan_acl_in[vlan.vid] = vlan.acl_in
 
-        port_conf.setdefault('mirror', None)
-        if port_conf['mirror'] is not None:
-            from_port_num = port_conf['mirror']
-            self.mirror_from_port[from_port_num] = port_num
-            # other configuration entries ignored.
+    def resolve_stack_topology(self, dps):
+
+        def canonical_edge(dp, port):
+            peer_dp = port.stack['dp']
+            peer_port = port.stack['port']
+            sort_edge_a = (
+                dp.name, port.name, dp, port)
+            sort_edge_z = (
+                peer_dp.name, peer_port.name, peer_dp, peer_port)
+            sorted_edge = sorted((sort_edge_a, sort_edge_z))
+            edge_a, edge_b = sorted_edge[0][2:], sorted_edge[1][2:]
+            return edge_a, edge_b
+
+        def make_edge_name(edge_a, edge_z):
+            edge_a_dp, edge_a_port = edge_a
+            edge_z_dp, edge_z_port = edge_z
+            return '%s:%s-%s:%s' % (
+                edge_a_dp.name, edge_a_port.name,
+                edge_z_dp.name, edge_z_port.name)
+
+        def make_edge_attr(edge_a, edge_z):
+            edge_a_dp, edge_a_port = edge_a
+            edge_z_dp, edge_z_port = edge_z
+            return {
+                'dp_a': edge_a_dp, 'port_a': edge_a_port,
+                'dp_z': edge_z_dp, 'port_z': edge_z_port}
+
+        root_dp = None
+        for dp in dps:
+            if dp.stack is not None:
+                if 'priority' in dp.stack:
+                    assert root_dp is None, 'multiple stack roots'
+                    root_dp = dp
+
+        if root_dp is None:
             return
 
-        # add native vlan
-        port_conf.setdefault('native_vlan', None)
-        if port_conf['native_vlan'] is not None:
-            vid = port_conf['native_vlan']
-            if vid not in self.vlans:
-                self.vlans[vid] = VLAN(vid)
-            self.vlans[vid].untagged.append(self.ports[port_num])
+        edge_count = {}
 
-        # add vlans
-        port_conf.setdefault('tagged_vlans', [])
-        for vid in port_conf['tagged_vlans']:
-            if vid not in self.vlans:
-                self.vlans[vid] = VLAN(vid)
-            self.vlans[vid].tagged.append(port)
+        graph = networkx.MultiGraph()
+        for dp in dps:
+            graph.add_node(dp.name)
+            for port in dp.stack_ports:
+                edge = canonical_edge(dp, port)
+                edge_a, edge_z = edge
+                edge_name = make_edge_name(edge_a, edge_z)
+                edge_attr = make_edge_attr(edge_a, edge_z)
+                edge_a_dp, _ = edge_a
+                edge_z_dp, _ = edge_z
+                if edge_name not in edge_count:
+                    edge_count[edge_name] = 0
+                edge_count[edge_name] += 1
+                graph.add_edge(
+                    edge_a_dp.name, edge_z_dp.name, edge_name, edge_attr)
+        if len(graph.edges()):
+            for edge_name, count in edge_count.iteritems():
+                assert count == 2, '%s defined only in one direction' % edge_name
+            if self.stack is None:
+                self.stack = {}
+            self.stack['root_dp'] = root_dp
+            self.stack['graph'] = graph
 
-        # add ACL
-        port_conf.setdefault('acl_in', None)
-        if port_conf['acl_in'] is not None:
-            self.acl_in[port_num] = port_conf['acl_in']
+    def shortest_path(self, dest_dp):
+        if self.stack is None:
+            return None
+        else:
+            return networkx.shortest_path(
+                self.stack['graph'], self.name, dest_dp)
 
-    def add_vlan(self, vid, vlan_conf=None):
-        vlan_conf = copy.copy(vlan_conf) if vlan_conf else {}
+    def shortest_path_port(self, dest_dp):
+        """Return port on our DP, that is the shortest path towards dest DP."""
+        shortest_path = self.shortest_path(dest_dp)
+        if shortest_path is not None:
+            peer_dp = shortest_path[1]
+            peer_dp_ports = []
+            for port in self.stack_ports:
+                if port.stack['dp'].name == peer_dp:
+                    peer_dp_ports.append(port)
+            return peer_dp_ports[0]
+        return None
 
-        self.vlans.setdefault(vid, VLAN(vid, vlan_conf))
+    def shortest_path_to_root(self):
+        if self.stack is not None:
+            root_dp = self.stack['root_dp']
+            if root_dp != self:
+                return self.shortest_path(root_dp.name)
+        return []
+
+    def finalize_config(self, dps):
+
+        def resolve_port_no(port_name):
+            if port_name in port_by_name:
+                return port_by_name[port_name].number
+            elif port_name in self.ports:
+                return port_name
+            return None
+
+        def resolve_stack_dps():
+            port_stack_dp = {}
+            for port in self.stack_ports:
+                stack_dp = port.stack['dp']
+                port_stack_dp[port] = dp_by_name[stack_dp]
+            for port, dp in port_stack_dp.iteritems():
+                port.stack['dp'] = dp
+                stack_port_name = port.stack['port']
+                port.stack['port'] = dp.ports[stack_port_name]
+
+        def resolve_mirror_destinations():
+            # Associate mirrored ports, with their destinations.
+            mirror_from_port = {}
+            for port in self.ports.itervalues():
+                if port.mirror is not None:
+                    if port.mirror in port_by_name:
+                        mirror_from_port[port] = port_by_name[port.mirror]
+                    else:
+                        mirror_from_port[self.ports[port.mirror]] = port
+            for port, mirror_destination_port in mirror_from_port.iteritems():
+                port.mirror = mirror_destination_port.number
+                mirror_destination_port.mirror_destination = True
+
+        def resolve_port_names_in_acls():
+            for acl in self.acls.itervalues():
+                for rule_conf in acl.rules:
+                    for attrib, attrib_value in rule_conf.iteritems():
+                        if attrib == 'actions':
+                            if 'mirror' in attrib_value:
+                                port_name = attrib_value['mirror']
+                                port_no = resolve_port_no(port_name)
+                                # in V2 config, we might have an ACL that does
+                                # not apply to a DP.
+                                if port_no is not None:
+                                    attrib_value['mirror'] = port_no
+                                    port = self.ports[port_no]
+                                    port.mirror_destination = True
+                            if 'output' in attrib_value:
+                                port_name = attrib_value['output']['port']
+                                port_no = resolve_port_no(port_name)
+                                if port_no is not None:
+                                    attrib_value['output']['port'] = port_no
+
+        port_by_name = {}
+        for port in self.ports.itervalues():
+            port_by_name[port.name] = port
+        dp_by_name = {}
+        for dp in dps:
+            dp_by_name[dp.name] = dp
+
+        resolve_stack_dps()
+        resolve_mirror_destinations()
+        resolve_port_names_in_acls()
+
 
     def get_native_vlan(self, port_num):
         if port_num not in self.ports:
@@ -248,6 +335,25 @@ class DP(object):
                 return vlan
 
         return None
+
+    def get_tables(self):
+        result = {}
+        for k in self.defaults:
+            if k.endswith('table'):
+                result[k] = self.__dict__[k]
+        return result
+
+    def to_conf(self):
+        result = self._to_conf()
+        if 'stack' in result:
+            result['stack'] = {
+                'root_dp': str(self.stack['root_dp'])
+                }
+        interface_dict = {}
+        for port in self.ports.itervalues():
+            interface_dict[port.name] = port.to_conf()
+        result['interfaces'] = interface_dict
+        return result
 
     def __str__(self):
         return self.name

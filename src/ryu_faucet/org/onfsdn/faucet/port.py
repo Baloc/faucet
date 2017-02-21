@@ -13,32 +13,85 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-class Port(object):
+from conf import Conf
 
+class Port(Conf):
+
+    name = None
     number = None
+    enabled = None
+    permanent_learn = None
+    unicast_flood = None
+    mirror = None
+    mirror_destination = None
+    native_vlan = None
+    tagged_vlans = []
+    acl_in = None
+    stack = {}
 
-    def __init__(self, number, conf=None):
+    defaults = {
+        'number': None,
+        'name': None,
+        'description': None,
+        'enabled': True,
+        'permanent_learn': False,
+        'unicast_flood': True,
+        'mirror': None,
+        'mirror_destination': False,
+        'native_vlan': None,
+        'tagged_vlans': None,
+        'acl_in': None,
+        'stack': None,
+        }
+
+    def __init__(self, _id, conf=None):
         if conf is None:
             conf = {}
-        self.number = number
-        self.name = conf.setdefault('name', str(number))
-        self.description = conf.setdefault('description', self.name)
-        self.enabled = conf.setdefault('enabled', True)
-        self.phys_up = False
-        self.permanent_learn = conf.setdefault('permanent_learn', False)
-        self.unicast_flood = conf.setdefault('unicast_flood', True)
+        self._id = _id
+        self.update(conf)
+        self.set_defaults()
+        self.dyn_phys_up = False
+
+    def set_defaults(self):
+        for key, value in self.defaults.iteritems():
+            self._set_default(key, value)
+        self._set_default('number', self._id)
+        self._set_default('name', str(self._id))
+        self._set_default('description', self.name)
+        self._set_default('tagged_vlans', [])
+
+    @property
+    def phys_up(self):
+        return self.dyn_phys_up
+
+    @phys_up.setter
+    def phys_up(self, status):
+        self.dyn_phys_up = status
 
     def running(self):
         return self.enabled and self.phys_up
+
+    def to_conf(self):
+        result = self._to_conf()
+        if 'stack' in result and result['stack'] is not None:
+            result['stack'] = {
+                'dp': str(self.stack['dp']),
+                'port': str(self.stack['port'])
+                }
+        return result
 
     def __eq__(self, other):
         return hash(self) == hash(other)
 
     def __hash__(self):
-        return hash(('Port', self.number))
+        items = [(k,v) for k, v in self.__dict__.iteritems() if 'dyn' not in k]
+        return hash(frozenset(map(str, items)))
 
     def __ne__(self, other):
         return not self.__eq__(other)
 
     def __str__(self):
         return self.name
+
+    def __repr__(self):
+        return "Port %s" % self.number

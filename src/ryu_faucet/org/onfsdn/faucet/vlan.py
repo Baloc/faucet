@@ -15,39 +15,80 @@
 
 import ipaddr
 
+from conf import Conf
 
-class VLAN(object):
+class VLAN(Conf):
 
-    vid = None
     tagged = None
     untagged = None
+    vid = None
+    faucet_vips = None
+    bgp_as = None
+    bgp_local_address = None
+    bgp_port = None
+    bgp_routerid = None
+    bgp_neighbor_addresses = []
+    bgp_neighbour_addresses = []
+    bgp_neighbor_as = None
+    bgp_neighbour_as = None
+    routes = None
+    max_hosts = None
+    unicast_flood = None
+    acl_in = None
+    # Define dynamic variables with prefix dyn_ to distinguish from variables set
+    # configuration
+    dyn_ipv4_routes = None
+    dyn_ipv6_routes = None
+    dyn_arp_cache = None
+    dyn_nd_cache = None
+    dyn_host_cache = None
 
-    def __init__(self, vid, conf=None):
+    defaults = {
+        'name': None,
+        'description': None,
+        'acl_in': None,
+        'faucet_vips': None,
+        'unicast_flood': True,
+        'bgp_as': 0,
+        'bgp_local_address': None,
+        'bgp_port': 9179,
+        'bgp_routerid': '',
+        'bgp_neighbour_addresses': [],
+        'bgp_neighbor_addresses': [],
+        'bgp_neighbour_as': 0,
+        'bgp_neighbor_as': None,
+        'routes': None,
+        'max_hosts': None,
+        }
+
+
+    def __init__(self, _id, dp_id, conf=None):
         if conf is None:
             conf = {}
-        self.vid = vid
+        self._id = _id
+        self.dp_id = dp_id
+        self.update(conf)
+        self.set_defaults()
+        self._id = _id
         self.tagged = []
         self.untagged = []
-        self.name = conf.setdefault('name', str(vid))
-        self.description = conf.setdefault('description', self.name)
-        self.controller_ips = conf.setdefault('controller_ips', [])
-        if self.controller_ips:
-            self.controller_ips = [
-                ipaddr.IPNetwork(ip) for ip in self.controller_ips]
-        self.unicast_flood = conf.setdefault('unicast_flood', True)
-        self.bgp_as = conf.setdefault('bgp_as', 0)
-        self.bgp_port = conf.setdefault('bgp_port', 9179)
-        self.bgp_routerid = conf.setdefault('bgp_routerid', '')
-        self.bgp_neighbor_address = conf.setdefault('bgp_neighbor_address', '')
-        self.bgp_neighbor_as = conf.setdefault('bgp_neighbor_as', 0)
+        self.dyn_ipv4_routes = {}
+        self.dyn_ipv6_routes = {}
+        self.dyn_arp_cache = {}
+        self.dyn_nd_cache = {}
+        self.dyn_host_cache = {}
+
+        if self.faucet_vips:
+            self.faucet_vips = [
+                ipaddr.IPNetwork(ip) for ip in self.faucet_vips]
+
         if self.bgp_as:
             assert self.bgp_port
             assert ipaddr.IPv4Address(self.bgp_routerid)
-            assert ipaddr.IPAddress(self.bgp_neighbor_address)
+            for neighbor_ip in self.bgp_neighbor_addresses:
+                assert ipaddr.IPAddress(neighbor_ip)
             assert self.bgp_neighbor_as
-        self.routes = conf.setdefault('routes', {})
-        self.ipv4_routes = {}
-        self.ipv6_routes = {}
+
         if self.routes:
             self.routes = [route['route'] for route in self.routes]
             for route in self.routes:
@@ -58,10 +99,56 @@ class VLAN(object):
                     self.ipv4_routes[ip_dst] = ip_gw
                 else:
                     self.ipv6_routes[ip_dst] = ip_gw
-        self.arp_cache = {}
-        self.nd_cache = {}
-        self.max_hosts = conf.setdefault('max_hosts', None)
-        self.host_cache = {}
+
+    @property
+    def ipv4_routes(self):
+        return self.dyn_ipv4_routes
+
+    @ipv4_routes.setter
+    def ipv4_routes(self, value):
+        self.dyn_ipv4_routes = value
+
+    @property
+    def ipv6_routes(self):
+        return self.dyn_ipv6_routes
+
+    @ipv6_routes.setter
+    def ipv6_routes(self, value):
+        self.dyn_ipv6_routes = value
+
+    @property
+    def arp_cache(self):
+        return self.dyn_arp_cache
+
+    @arp_cache.setter
+    def arp_cache(self, value):
+        self.dyn_arp_cache = value
+
+    @property
+    def nd_cache(self):
+        return self.dyn_nd_cache
+
+    @nd_cache.setter
+    def nd_cache(self, value):
+        self.dyn_nd_cache = value
+
+    @property
+    def host_cache(self):
+        return self.dyn_host_cache
+
+    @host_cache.setter
+    def host_cache(self, value):
+        self.dyn_host_cache = value
+
+    def set_defaults(self):
+        for key, value in self.defaults.iteritems():
+            self._set_default(key, value)
+        self._set_default('vid', self._id)
+        self._set_default('name', str(self._id))
+        self._set_default('faucet_vips', [])
+        self._set_default('bgp_neighbor_as', self.bgp_neighbour_as)
+        self._set_default(
+            'bgp_neighbor_addresses', self.bgp_neighbour_addresses)
 
     def __str__(self):
         port_list = [str(x) for x in self.get_ports()]
@@ -71,11 +158,28 @@ class VLAN(object):
     def get_ports(self):
         return self.tagged + self.untagged
 
-    def contains_port(self, port_number):
-        for port in self.get_ports():
-            if port.number == port_number:
-                return True
-        return False
+    def mirrored_ports(self):
+        return [port for port in self.get_ports() if port.mirror]
+
+    def mirror_destination_ports(self):
+        return [port for port in self.get_ports() if port.mirror_destination]
+
+    def flood_ports(self, configured_ports, exclude_unicast):
+        ports = []
+        for port in configured_ports:
+            if not port.running:
+                continue
+            if exclude_unicast:
+                if not port.unicast_flood:
+                    continue
+            ports.append(port)
+        return ports
+
+    def tagged_flood_ports(self, exclude_unicast):
+        return self.flood_ports(self.tagged, exclude_unicast)
+
+    def untagged_flood_ports(self, exclude_unicast):
+        return self.flood_ports(self.untagged, exclude_unicast)
 
     def port_is_tagged(self, port_number):
         for port in self.tagged:
@@ -88,3 +192,47 @@ class VLAN(object):
             if port.number == port_number:
                 return True
         return False
+
+    def is_faucet_vip(self, ip):
+        for faucet_vip in self.faucet_vips:
+            if ip == faucet_vip.ip:
+                return True
+        return False
+
+    def ip_in_vip_subnet(self, ip):
+        for faucet_vip in self.faucet_vips:
+            if ip in faucet_vip:
+                return True
+        return False
+
+    def ips_in_vip_subnet(self, ips):
+        for ip in ips:
+            if not self.ip_in_vip_subnet(ip):
+                return False
+        return True
+
+    def from_connected_to_vip(self, src_ip, dst_ip):
+        """Return True if src_ip in connected network and dst_ip is a VIP.
+
+        Args:
+            src_ip (ipaddr.IPAddress): source IP.
+            dst_ip (ipaddr.IPAddress): destination IP
+        Returns:
+            True if local traffic for a VIP.
+        """
+        if self.is_faucet_vip(dst_ip) and self.ip_in_vip_subnet(src_ip):
+            return True
+        return False
+
+    def to_conf(self):
+        return self._to_conf()
+
+    def __hash__(self):
+        items = [(k, v) for k, v in self.__dict__.iteritems() if 'dyn' not in k]
+        return hash(frozenset(map(str, items)))
+
+    def __eq__(self, other):
+        return hash(self) == hash(other)
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
